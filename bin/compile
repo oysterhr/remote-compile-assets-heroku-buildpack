@@ -38,36 +38,42 @@ download_manifest_file() {
 
   mkdir -p "$(dirname "$manifest_file_path")"
 
-  echo "Attempting to download $cdn_url to $manifest_file_path..."
   curl -f -s -o "$manifest_file_path" "$cdn_url"
 }
 
 check_manifest_loop() {
   while true; do
     if download_manifest_file $1; then
-      echo "    Success!"
+      echo "   ✅ Success!"
       break
     else
-      echo "    Retrying in $MANIFEST_POLL_INTERVAL seconds..."
+      # echo "    Retrying in $MANIFEST_POLL_INTERVAL seconds..."
       sleep $MANIFEST_POLL_INTERVAL
     fi
   done
 }
 
 trigger_webhook() {
-  curl -X POST \
+  response=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
     -H 'Content-Type: application/json' \
     --url "$WEBHOOK_URL" \
-    -d "$HARNESS_WEBHOOK_PAYLOAD"
+    -d "$HARNESS_WEBHOOK_PAYLOAD")
+
+  if [ "$response" -eq 200 ]; then
+    echo "✅ Webhook triggered successfully."
+  else
+    echo "❌ Failed to trigger webhook. HTTP status code: $response"
+  fi
 }
 
 if download_manifest_file ".vite"; then
-  echo "    Success! Skipping build!"
+  echo "   ✅ Success! Skipping build!"
 else
-  echo "    Failed! Triggering new build..."
+  echo "   ⏭️ Failed! Triggering new build..."
   trigger_webhook
   echo ""
   sleep $MANIFEST_POLL_INTERVAL
+  echo "⏳ Downloading for main app"
   check_manifest_loop ".vite"
 fi
 
@@ -76,16 +82,16 @@ echo "Downloading manifest files for standalone apps in $BUILD_DIR/frontend/apps
 for subdir in "$BUILD_DIR/frontend/apps"/*; do
   # Only consider directories, skip the .vite one because it's been processed first,
   # and avoid storybook dirs
-  echo "Checking $subdir"
+  # echo "Checking $subdir"
   if [[ -d $subdir && $(basename "$subdir") != ".vite" && ! $(basename "$subdir") =~ storybook ]]; then
-    echo "Considering $subdir!"
+    # echo "Considering $subdir!"
     subdir_name=$(basename "$subdir")
 
-    echo "Downloading for $subdir_name/.vite"
+    echo "⏳ Downloading for $subdir_name/.vite"
     if download_manifest_file "$subdir_name/.vite"; then
-      echo "Manifest file for $subdir_name downloaded successfully."
+      echo "✅ Manifest file for $subdir_name downloaded successfully."
     else
-      echo "Manifest file for $subdir_name unavailable. Retrying..."
+      # echo "Manifest file for $subdir_name unavailable. Retrying..."
       check_manifest_loop "$subdir_name/.vite"
     fi
   fi
