@@ -5,8 +5,7 @@ set -e
 BUILD_DIR=$1
 CACHE_DIR=$2
 ENV_DIR=$3
-ROOT_DIR=$(pwd)
-MANIFEST_FILE_PATH="$ROOT_DIR/public/vite/.vite/manifest.json"
+MANIFEST_FILE_PATH="$BUILD_DIR/public/vite/.vite/manifest.json"
 CDN_HOST=$(cat "$ENV_DIR/CDN_HOST")
 CDN_MANIFEST_FILE="https://$CDN_HOST/$SOURCE_VERSION/vite/.vite/manifest.json"
 MANIFEST_POLL_INTERVAL=10
@@ -36,6 +35,7 @@ curl -X POST \
   --url "$WEBHOOK_URL" \
   -d "$HARNESS_WEBHOOK_PAYLOAD"
 
+mkdir -p "$(dirname "$MANIFEST_FILE_PATH")"
 
 download_manifest_file() {
   curl -f -s -o "$MANIFEST_FILE_PATH" "$CDN_MANIFEST_FILE"
