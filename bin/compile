@@ -9,12 +9,14 @@ MANIFEST_FILE_PATH="$BUILD_DIR/public/vite/.vite/manifest.json"
 CDN_HOST=$(cat "$ENV_DIR/CDN_HOST")
 CDN_MANIFEST_FILE="https://$CDN_HOST/$SOURCE_VERSION/vite/.vite/manifest.json"
 MANIFEST_POLL_INTERVAL=10
+HEROKU_BRANCH=$(cat "$ENV_DIR/HEROKU_BRANCH")
 
 echo "--------------------------------------------------"
 echo "Commit SHA        : $SOURCE_VERSION"
 echo "CDN host          : $CDN_HOST"
 echo "CDN manifest file : $CDN_MANIFEST_FILE"
 echo "Manifest file path: $MANIFEST_FILE_PATH"
+echo "Heroku Branch     : $HEROKU_BRANCH"
 echo "--------------------------------------------------"
 
 # Webhook variables
