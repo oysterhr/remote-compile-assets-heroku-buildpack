@@ -44,7 +44,7 @@ download_manifest_file() {
 check_manifest_loop() {
   while true; do
     if download_manifest_file $1; then
-      echo "   ✅ Success!"
+      echo "✅ Manifest file for $1 downloaded successfully."
       break
     else
       # echo "    Retrying in $MANIFEST_POLL_INTERVAL seconds..."
@@ -67,14 +67,15 @@ trigger_webhook() {
 }
 
 if download_manifest_file ".vite"; then
-  echo "   ✅ Success! Skipping build!"
+  echo "---> ✅ Success! Skipping build!"
 else
-  echo "   ⏭️ Failed! Triggering new build..."
+  echo "---> ⏭️ Failed! Triggering new build..."
   trigger_webhook
-  echo ""
-  sleep $MANIFEST_POLL_INTERVAL
-  echo "⏳ Downloading for main app"
+  echo "---> ⏳ Frontend is being builded in Harness. This could take a while..."
+  sleep 180
+  echo "---> ⏳ Downloading manifest for main app. This could take a while..."
   check_manifest_loop ".vite"
+  echo "---> ✅ Manifest file for main app downloaded successfully."
 fi
 
 echo "Downloading manifest files for standalone apps in $BUILD_DIR/frontend/apps..."
@@ -87,9 +88,9 @@ for subdir in "$BUILD_DIR/frontend/apps"/*; do
     # echo "Considering $subdir!"
     subdir_name=$(basename "$subdir")
 
-    echo "⏳ Downloading for $subdir_name/.vite"
+    echo "---> ⏳ Downloading for $subdir_name/.vite"
     if download_manifest_file "$subdir_name/.vite"; then
-      echo "✅ Manifest file for $subdir_name downloaded successfully."
+      echo "---> ✅ Manifest file for $subdir_name downloaded successfully."
     else
       # echo "Manifest file for $subdir_name unavailable. Retrying..."
       check_manifest_loop "$subdir_name/.vite"
