@@ -9,5 +9,9 @@ CACHE_DIR=$2
 ENV_DIR=$3
 ROOT_DIR=$(pwd)
 
+CDN_HOST=$(cat "$ENV_DIR/CDN_HOST")
+CDN_MANIFEST_FILE="https://$CDN_HOST/$SOURCE_VERSION/manifest.json"
 
 echo "Source version is $SOURCE_VERSION"
+echo "CDN HOST: $CDN_HOST"
+echo "CDN MANIFEST FILE: $CDN_MANIFEST_FILE"
