@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo "🦪  Oyster Remote Compilation Buildpack  💻"
+exit 0
