@@ -68,3 +68,20 @@ else
   sleep $MANIFEST_POLL_INTERVAL
   check_manifest_loop ".vite"
 fi
+
+echo "Downloading manifest files for standalone apps in $VITE_DIR..."
+for subdir in "$VITE_DIR"/*; do
+  if [[ -d $subdir && $(basename "$subdir") != ".vite" ]]; then
+    subdir_name=$(basename "$subdir")
+
+    if download_manifest_file "$subdir_name/.vite"; then
+      echo "Manifest file for $subdir_name downloaded successfully."
+    else
+      echo "Manifest file for $subdir_name unavailable. Retrying..."
+      check_manifest_loop "$subdir_name/.vite"
+    fi
+  fi
+done
+
+# Inprogress:
+# https://dashboard.heroku.com/apps/oyster-deplo-hackathon--cy8arx/activity/builds/b6f1000c-6b18-4940-a3c1-c318ad830262
