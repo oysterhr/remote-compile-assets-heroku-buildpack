@@ -29,12 +29,6 @@ HARNESS_WEBHOOK_PAYLOAD="{\"commitSha\": \"$SOURCE_VERSION\", \"branch\": \"mast
 # Construct URL
 WEBHOOK_URL="${HARNESS_WEBHOOK_BASE_URL}?accountIdentifier=${HARNESS_ACCOUNT_IDENTIFIER}&orgIdentifier=${HARNESS_ORG_IDENTIFIER}&projectIdentifier=${HARNESS_PROJECT_IDENTIFIER}&pipelineIdentifier=${HARNESS_PIPELINE_IDENTIFIER}&triggerIdentifier=${HARNESS_TRIGGER_IDENTIFIER}"
 
-# Trigger the webhook
-curl -X POST \
-  -H 'Content-Type: application/json' \
-  --url "$WEBHOOK_URL" \
-  -d "$HARNESS_WEBHOOK_PAYLOAD"
-
 mkdir -p "$(dirname "$MANIFEST_FILE_PATH")"
 
 download_manifest_file() {
@@ -47,20 +41,25 @@ check_manifest_loop() {
       echo "Manifest file downloaded successfully."
       break
     else
-        echo "retrying"
+      echo "Manifest file not found. Retrying in $MANIFEST_POLL_INTERVAL seconds..."
       sleep $MANIFEST_POLL_INTERVAL
     fi
   done
 }
 
-request_new_manifest_file() {
-  echo "Manifest file unavailable. Requesting a new one..."
-  # Implementation placeholder
+trigger_webhook() {
+  curl -X POST \
+    -H 'Content-Type: application/json' \
+    --url "$WEBHOOK_URL" \
+    -d "$HARNESS_WEBHOOK_PAYLOAD"
 }
 
 echo "Downloading manifest file..."
-if ! download_manifest_file; then
-  echo "Manifest file does not exist. Requesting a new file..."
-  request_new_manifest_file
+if download_manifest_file; then
+  echo "Manifest file previously built: downloaded successfully."
+else
+  echo "Manifest file unavailable. Triggering webhook..."
+  trigger_webhook
+  sleep $MANIFEST_POLL_INTERVAL
   check_manifest_loop
 fi
