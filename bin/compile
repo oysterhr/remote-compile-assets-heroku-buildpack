@@ -8,7 +8,7 @@ ENV_DIR=$3
 ROOT_DIR=$(pwd)
 MANIFEST_FILE_PATH="$ROOT_DIR/public/vite/.vite/manifest.json"
 CDN_HOST=$(cat "$ENV_DIR/CDN_HOST")
-CDN_MANIFEST_FILE="https://$CDN_HOST/$SOURCE_VERSION/manifest.json"
+CDN_MANIFEST_FILE="https://$CDN_HOST/$SOURCE_VERSION/vite/.vite/manifest.json"
 MANIFEST_POLL_INTERVAL=10
 
 echo "--------------------------------------------------"
