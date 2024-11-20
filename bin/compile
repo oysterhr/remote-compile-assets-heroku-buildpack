@@ -63,3 +63,13 @@ else
   sleep $MANIFEST_POLL_INTERVAL
   check_manifest_loop
 fi
+
+echo "Write export file"
+write_export() {
+  local bp_dir="$1"
+  local build_dir="$2"
+  echo "export CDN_ASSETS_PATH=\"$CDN_HOST/$SOURCE_VERSION\"" > $BUILD_DIR/export
+  cat $BUILD_DIR/export
+}
+
+write_export
