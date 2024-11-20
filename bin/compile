@@ -1,17 +1,47 @@
 #!/usr/bin/env bash
 
-# `set –e` is used within Bash to stop execution instantly as a query exits with a non-zero status.
-# This function is also used when you need to know the error location in the running code
 set -e
 
 BUILD_DIR=$1
 CACHE_DIR=$2
 ENV_DIR=$3
 ROOT_DIR=$(pwd)
-
+MANIFEST_FILE_PATH="$ROOT_DIR/public/vite/.vite/manifest.json"
 CDN_HOST=$(cat "$ENV_DIR/CDN_HOST")
 CDN_MANIFEST_FILE="https://$CDN_HOST/$SOURCE_VERSION/manifest.json"
+MANIFEST_POLL_INTERVAL=10
 
-echo "Source version is $SOURCE_VERSION"
-echo "CDN HOST: $CDN_HOST"
-echo "CDN MANIFEST FILE: $CDN_MANIFEST_FILE"
+echo "--------------------------------------------------"
+echo "Commit SHA        : $SOURCE_VERSION"
+echo "CDN host          : $CDN_HOST"
+echo "CDN manifest file : $CDN_MANIFEST_FILE"
+echo "Manifest file path: $MANIFEST_FILE_PATH"
+echo "--------------------------------------------------"
+
+download_manifest_file() {
+  curl -f -s -o "$MANIFEST_FILE_PATH" "$CDN_MANIFEST_FILE"
+}
+
+check_manifest_loop() {
+  while true; do
+    if download_manifest_file; then
+      echo "Manifest file downloaded successfully."
+      break
+    else
+        echo "retrying"
+      sleep $MANIFEST_POLL_INTERVAL
+    fi
+  done
+}
+
+request_new_manifest_file() {
+  echo "Manifest file unavailable. Requesting a new one..."
+  # Implementation placeholder
+}
+
+echo "Downloading manifest file..."
+if ! download_manifest_file; then
+  echo "Manifest file does not exist. Requesting a new file..."
+  request_new_manifest_file
+  check_manifest_loop
+fi
