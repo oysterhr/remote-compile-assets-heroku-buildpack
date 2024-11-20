@@ -37,16 +37,17 @@ download_manifest_file() {
 
   mkdir -p "$(dirname "$manifest_file_path")"
 
+  echo "Attempting to download $cdn_url to $manifest_file_path..."
   curl -f -s -o "$manifest_file_path" "$cdn_url"
 }
 
 check_manifest_loop() {
   while true; do
     if download_manifest_file $1; then
-      echo "Manifest file downloaded successfully."
+      echo "    Success!"
       break
     else
-      echo "Manifest file not found. Retrying in $MANIFEST_POLL_INTERVAL seconds..."
+      echo "    Retrying in $MANIFEST_POLL_INTERVAL seconds..."
       sleep $MANIFEST_POLL_INTERVAL
     fi
   done
@@ -59,21 +60,27 @@ trigger_webhook() {
     -d "$HARNESS_WEBHOOK_PAYLOAD"
 }
 
-echo "Downloading manifest file..."
 if download_manifest_file ".vite"; then
-  echo "Manifest file previously built: downloaded successfully."
+  echo "    Success! Skipping build!"
 else
-  echo "Manifest file unavailable. Triggering webhook..."
+  echo "    Failed! Triggering new build..."
   trigger_webhook
+  echo ""
   sleep $MANIFEST_POLL_INTERVAL
   check_manifest_loop ".vite"
 fi
 
-echo "Downloading manifest files for standalone apps in $VITE_DIR..."
-for subdir in "$VITE_DIR"/*; do
-  if [[ -d $subdir && $(basename "$subdir") != ".vite" ]]; then
+echo "Downloading manifest files for standalone apps in $BUILD_DIR/frontend/apps..."
+
+for subdir in "$BUILD_DIR/frontend/apps"/*; do
+  # Only consider directories, skip the .vite one because it's been processed first,
+  # and avoid storybook dirs
+  echo "Checking $subdir"
+  if [[ -d $subdir && $(basename "$subdir") != ".vite" && ! $(basename "$subdir") =~ storybook ]]; then
+    echo "Considering $subdir!"
     subdir_name=$(basename "$subdir")
 
+    echo "Downloading for $subdir_name/.vite"
     if download_manifest_file "$subdir_name/.vite"; then
       echo "Manifest file for $subdir_name downloaded successfully."
     else
@@ -82,6 +89,3 @@ for subdir in "$VITE_DIR"/*; do
     fi
   fi
 done
-
-# Inprogress:
-# https://dashboard.heroku.com/apps/oyster-deplo-hackathon--cy8arx/activity/builds/b6f1000c-6b18-4940-a3c1-c318ad830262
