@@ -78,8 +78,3 @@ echo "---> Extracting manifest archive..."
 
 mkdir -p public
 tar -xvf manifests.tar.gz -C public
-
-echo "---> Listing manifest files"
-
-find public --type f \( -name "*manifest*.js" -o -name "*manifest*.js.gz" -o -name "*manifest*.json" \)
-
