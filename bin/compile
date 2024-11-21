@@ -78,4 +78,9 @@ echo "---> Extracting manifest archive..."
 
 mkdir -p public
 tar -xvf manifests.tar.gz -C $BUILD_DIR/public
-rm -f manifests.tar.gzß
+rm -f manifests.tar.gz
+
+# Delete package.json and yarn.lock files, so the ruby buildpack coming next
+# does not attempt to install node
+# https://devcenter.heroku.com/articles/ruby-support-reference#node-js-support
+rm -f $BUILD_DIR/package.json $BUILD_DIR/yarn.lock
