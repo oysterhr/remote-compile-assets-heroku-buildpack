@@ -34,7 +34,8 @@ HARNESS_WEBHOOK_PAYLOAD="{\"commitSha\": \"$SOURCE_VERSION\", \"branch\": \"$HER
 WEBHOOK_URL="${HARNESS_WEBHOOK_BASE_URL}?accountIdentifier=${HARNESS_ACCOUNT_IDENTIFIER}&orgIdentifier=${HARNESS_ORG_IDENTIFIER}&projectIdentifier=${HARNESS_PROJECT_IDENTIFIER}&pipelineIdentifier=${HARNESS_PIPELINE_IDENTIFIER}&triggerIdentifier=${HARNESS_TRIGGER_IDENTIFIER}"
 
 download_manifest_archive() {
-  curl -f -s -o manifests.tar.gz "$CDN_HOST/manifests.tar.gz"
+  echo "Attempting to download $CDN_URL/manifests.tar.gz"
+  curl -f -s -o manifests.tar.gz "$CDN_URL/manifests.tar.gz"
 }
 
 check_manifest_loop() {
