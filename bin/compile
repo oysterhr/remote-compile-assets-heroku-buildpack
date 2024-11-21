@@ -77,4 +77,5 @@ fi
 echo "---> Extracting manifest archive..."
 
 mkdir -p public
-tar -xvf manifests.tar.gz -C public
+tar -xvf manifests.tar.gz -C $BUILD_DIR/public
+rm -f manifests.tar.gzß
