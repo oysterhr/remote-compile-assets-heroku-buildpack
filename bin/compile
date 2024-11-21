@@ -5,20 +5,21 @@ set -e
 BUILD_DIR=$1
 CACHE_DIR=$2
 ENV_DIR=$3
-VITE_DIR="$BUILD_DIR/public/vite"
+
 CDN_HOST=$(cat "$ENV_DIR/CDN_HOST")
-CDN_VITE_URL="https://$CDN_HOST/$SOURCE_VERSION/vite"
+CDN_URL="https://$CDN_HOST/$SOURCE_VERSION"
 MANIFEST_POLL_INTERVAL=10
 HEROKU_BRANCH=$(cat "$ENV_DIR/HEROKU_BRANCH")
 RAILS_ENV=$(cat "$ENV_DIR/RAILS_ENV" | sed 's/.*/\U&/')
 
+echo
 echo "--------------------------------------------------"
 echo "Commit SHA        : $SOURCE_VERSION"
-echo "CDN host          : $CDN_HOST"
-echo "CDN vite url      : $CDN_VITE_URL"
-echo "Public vite dir   : $VITE_DIR"
+echo "CDN URL           : $CDN_URL"
 echo "Heroku Branch     : $HEROKU_BRANCH"
+echo "Rails Environment : $RAILS_ENV"
 echo "--------------------------------------------------"
+echo
 
 # Webhook variables
 HARNESS_WEBHOOK_BASE_URL=$(cat "$ENV_DIR/HARNESS_WEBHOOK_BASE_URL")
@@ -32,19 +33,14 @@ HARNESS_WEBHOOK_PAYLOAD="{\"commitSha\": \"$SOURCE_VERSION\", \"branch\": \"$HER
 # Construct URL
 WEBHOOK_URL="${HARNESS_WEBHOOK_BASE_URL}?accountIdentifier=${HARNESS_ACCOUNT_IDENTIFIER}&orgIdentifier=${HARNESS_ORG_IDENTIFIER}&projectIdentifier=${HARNESS_PROJECT_IDENTIFIER}&pipelineIdentifier=${HARNESS_PIPELINE_IDENTIFIER}&triggerIdentifier=${HARNESS_TRIGGER_IDENTIFIER}"
 
-download_manifest_file() {
-  local manifest_file_path=$VITE_DIR/$1/manifest.json
-  local cdn_url=$CDN_VITE_URL/$1/manifest.json
-
-  mkdir -p "$(dirname "$manifest_file_path")"
-
-  curl -f -s -o "$manifest_file_path" "$cdn_url"
+download_manifest_archive() {
+  curl -f -s -o manifests.tar.gz "$CDN_HOST/manifests.tar.gz"
 }
 
 check_manifest_loop() {
   while true; do
-    if download_manifest_file $1; then
-      echo "✅ Manifest file for $1 downloaded successfully."
+    if download_manifest_archive; then
+      echo "✅ Manifest archive downloaded successfully."
       break
     else
       # echo "    Retrying in $MANIFEST_POLL_INTERVAL seconds..."
@@ -66,34 +62,23 @@ trigger_webhook() {
   fi
 }
 
-if download_manifest_file ".vite"; then
+if download_manifest_archive; then
   echo "---> ✅ Success! Skipping build!"
 else
   echo "---> ⏭️ Failed! Triggering new build..."
   trigger_webhook
-  echo "---> ⏳ Frontend is being builded in Harness. This could take a while..."
+  echo "---> ⏳ Frontend is being built in Harness. This could take a while..."
   sleep 180
-  echo "---> ⏳ Downloading manifest for main app. This could take a while..."
-  check_manifest_loop ".vite"
-  echo "---> ✅ Manifest file for main app downloaded successfully."
+  echo "---> ⏳ Downloading manifest archive. This could take a while..."
+  check_manifest_loop
 fi
 
-echo "Downloading manifest files for standalone apps in $BUILD_DIR/frontend/apps..."
+echo "---> Extracting manifest archive..."
 
-for subdir in "$BUILD_DIR/frontend/apps"/*; do
-  # Only consider directories, skip the .vite one because it's been processed first,
-  # and avoid storybook dirs
-  # echo "Checking $subdir"
-  if [[ -d $subdir && $(basename "$subdir") != ".vite" && ! $(basename "$subdir") =~ storybook ]]; then
-    # echo "Considering $subdir!"
-    subdir_name=$(basename "$subdir")
+mkdir -p public
+tar -xvf manifests.tar.gz -C public
 
-    echo "---> ⏳ Downloading for $subdir_name/.vite"
-    if download_manifest_file "$subdir_name/.vite"; then
-      echo "---> ✅ Manifest file for $subdir_name downloaded successfully."
-    else
-      # echo "Manifest file for $subdir_name unavailable. Retrying..."
-      check_manifest_loop "$subdir_name/.vite"
-    fi
-  fi
-done
+echo "---> Listing manifest files"
+
+find public --type f \( -name "*manifest*.js" -o -name "*manifest*.js.gz" -o -name "*manifest*.json" \)
+
