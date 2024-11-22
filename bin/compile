@@ -84,3 +84,7 @@ rm -f manifests.tar.gz
 # does not attempt to install node
 # https://devcenter.heroku.com/articles/ruby-support-reference#node-js-support
 rm -f $BUILD_DIR/package.json $BUILD_DIR/yarn.lock
+
+# Write the commit SHA to a HEROKU_BUILD_COMMIT file, to support review apps that are
+# recently-created and lack the heroku labs features that provide this information
+echo $SOURCE_VERSION > $BUILD_DIR/HEROKU_BUILD_COMMIT
