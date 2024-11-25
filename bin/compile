@@ -5,12 +5,13 @@ set -e
 BUILD_DIR=$1
 CACHE_DIR=$2
 ENV_DIR=$3
+BUILDPACK_DIR=$(cd "$(dirname "${0:-}")"; cd ..; pwd)
 
 CDN_HOST=$(cat "$ENV_DIR/CDN_HOST")
 CDN_URL="https://$CDN_HOST/$SOURCE_VERSION"
-MANIFEST_POLL_INTERVAL=10
+POLL_INTERVAL=10
 HEROKU_BRANCH=$(cat "$ENV_DIR/HEROKU_BRANCH")
-RAILS_ENV=$(cat "$ENV_DIR/RAILS_ENV" | sed 's/.*/\U&/')
+RAILS_ENV=$(cat "$ENV_DIR/RAILS_ENV" | tr '[:lower:]' '[:upper:]')
 
 echo
 echo "--------------------------------------------------"
@@ -33,8 +34,18 @@ HARNESS_WEBHOOK_PAYLOAD="{\"commitSha\": \"$SOURCE_VERSION\", \"branch\": \"$HER
 # Construct URL
 WEBHOOK_URL="${HARNESS_WEBHOOK_BASE_URL}?accountIdentifier=${HARNESS_ACCOUNT_IDENTIFIER}&orgIdentifier=${HARNESS_ORG_IDENTIFIER}&projectIdentifier=${HARNESS_PROJECT_IDENTIFIER}&pipelineIdentifier=${HARNESS_PIPELINE_IDENTIFIER}&triggerIdentifier=${HARNESS_TRIGGER_IDENTIFIER}"
 
+check_file_exists_remote() {
+  echo "-----> ⏳ Checking if file exists at $CDN_URL/$1"
+  # Use curl to send a HEAD request to check if the file exists
+  if curl -f -s -I "$CDN_URL/$1" > /dev/null; then
+    return 0
+  else
+    return 1
+  fi
+}
+
 download_manifest_archive() {
-  echo "Attempting to download $CDN_URL/manifests.tar.gz"
+  echo "-----> ⏳ Attempting to download $CDN_URL/manifests.tar.gz"
   curl -f -s -o manifests.tar.gz "$CDN_URL/manifests.tar.gz"
 }
 
@@ -44,8 +55,8 @@ check_manifest_loop() {
       echo "✅ Manifest archive downloaded successfully."
       break
     else
-      # echo "    Retrying in $MANIFEST_POLL_INTERVAL seconds..."
-      sleep $MANIFEST_POLL_INTERVAL
+      echo "-----> ⏳ Retrying in $POLL_INTERVAL seconds..."
+      sleep $POLL_INTERVAL
     fi
   done
 }
@@ -57,34 +68,69 @@ trigger_webhook() {
     -d "$HARNESS_WEBHOOK_PAYLOAD")
 
   if [ "$response" -eq 200 ]; then
-    echo "✅ Webhook triggered successfully."
+    echo "-----> ✅ Webhook triggered successfully."
   else
-    echo "❌ Failed to trigger webhook. HTTP status code: $response"
+    echo "-----> ❌ Failed to trigger webhook. HTTP status code: $response"
   fi
 }
 
-if download_manifest_archive; then
-  echo "---> ✅ Success! Skipping build!"
+if [[ $CURRENT_BUILDPACK_STEP == "download_manifest" ]]; then
+  echo "-----> 🔄 Running step 2: Downloading manifest archive..."
+
+  if download_manifest_archive; then
+    echo "-----> ✅ Manifest archive downloaded successfully. Extracting..."
+  else
+    echo "-----> ⏳ Manifest archive not found. Entering busy loop until it can be downloaded..."
+    check_manifest_loop
+  fi
+
+  mkdir -p public
+  tar -xvf manifests.tar.gz -C "$BUILD_DIR/public"
+  rm -f manifests.tar.gz
+
+  echo "-----> ⏳ We'll now check whether the file finished.txt is found in the remote, indicating all compiled assets have been uploaded."
+
+  while true; do
+    if check_file_exists_remote "finished.txt"; then
+      echo "-----> ✅ File finished.txt has been found. All done!"
+      break
+    else
+      echo "-----> ⏳ File finished.txt not found. Retrying in $POLL_INTERVAL seconds..."
+      sleep "$POLL_INTERVAL"
+    fi
+  done
 else
-  echo "---> ⏭️ Failed! Triggering new build..."
-  trigger_webhook
-  echo "---> ⏳ Frontend is being built in Harness. This could take a while..."
-  sleep 180
-  echo "---> ⏳ Downloading manifest archive. This could take a while..."
-  check_manifest_loop
+  echo "-----> 🔄 Running step 1: Triggering webhook to compile frontend assets and manifest archive, if it is not present in remote..."
+
+  # Next time this buildpack runs, it will download the manifest archive
+  echo "export CURRENT_BUILDPACK_STEP=download_manifest" > "$BUILDPACK_DIR/export"
+
+  # Check if the manifest archive exists, and trigger a new build if not
+  # IF it already exists, we just proceed, as the buildpack will download it later
+  # once it runs for the second time.
+  if check_file_exists_remote "manifests.tar.gz"; then
+    echo "-----> ✅ Manifest archive found!"
+  else
+    echo "-----> ⏳ Manifest archive not found. Triggering a new build..."
+    trigger_webhook
+  fi
+
+  echo "-----> ✅ Create a bogus manifest.yml file so the ruby buildpack does not call assets:precompile."
+  mkdir -p "$BUILD_DIR/public/assets"
+  touch "bogus" > "$BUILD_DIR/public/assets/manifest-123.json"
+  
+  # Delete package.json and yarn.lock files, so the ruby buildpack coming next
+  # does not attempt to install node
+  # https://devcenter.heroku.com/articles/ruby-support-reference#node-js-support
+  rm -f "$BUILD_DIR/package.json" "$BUILD_DIR/yarn.lock"
+
+  echo "-----> ✅ Removed package.json and yarn.lock, to prevent the ruby buildpack coming next from installing node."
+
+  # Write the commit SHA to a HEROKU_BUILD_COMMIT file, to support review apps that are
+  # recently-created and lack the heroku labs features that provide this information
+  echo $SOURCE_VERSION > "$BUILD_DIR/HEROKU_BUILD_COMMIT"
+
+  echo "-----> ✅ Commit SHA ($SOURCE_VERSION) wrote to HEROKU_BUILD_COMMIT to support freshly created review apps without labs features."
+
+  echo "-----> ✅ Step 1 finished, allowing other buildpacks to run."
 fi
-
-echo "---> Extracting manifest archive..."
-
-mkdir -p public
-tar -xvf manifests.tar.gz -C $BUILD_DIR/public
-rm -f manifests.tar.gz
-
-# Delete package.json and yarn.lock files, so the ruby buildpack coming next
-# does not attempt to install node
-# https://devcenter.heroku.com/articles/ruby-support-reference#node-js-support
-rm -f $BUILD_DIR/package.json $BUILD_DIR/yarn.lock
-
-# Write the commit SHA to a HEROKU_BUILD_COMMIT file, to support review apps that are
-# recently-created and lack the heroku labs features that provide this information
-echo $SOURCE_VERSION > $BUILD_DIR/HEROKU_BUILD_COMMIT
