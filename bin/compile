@@ -7,6 +7,9 @@ CACHE_DIR=$2
 ENV_DIR=$3
 BUILDPACK_DIR=$(cd "$(dirname "${0:-}")"; cd ..; pwd)
 
+# Max number of minutes we'll wait for the remote build to finish.
+REMOTE_BUILD_TIMEOUT_MINUTES=$(cat "$ENV_DIR/REMOTE_BUILD_TIMEOUT_MINUTES")
+
 CDN_HOST=$(cat "$ENV_DIR/CDN_HOST")
 CDN_URL="https://$CDN_HOST/$SOURCE_VERSION"
 POLL_INTERVAL=10
@@ -34,6 +37,21 @@ HARNESS_WEBHOOK_PAYLOAD="{\"commitSha\": \"$SOURCE_VERSION\", \"branch\": \"$HER
 # Construct URL
 WEBHOOK_URL="${HARNESS_WEBHOOK_BASE_URL}?accountIdentifier=${HARNESS_ACCOUNT_IDENTIFIER}&orgIdentifier=${HARNESS_ORG_IDENTIFIER}&projectIdentifier=${HARNESS_PROJECT_IDENTIFIER}&pipelineIdentifier=${HARNESS_PIPELINE_IDENTIFIER}&triggerIdentifier=${HARNESS_TRIGGER_IDENTIFIER}"
 
+start_timer() {
+  TIMEOUT_MINUTES=$1
+  TIMEOUT=$((TIMEOUT_MINUTES * 60)) # Convert minutes to seconds
+  START_TIME=$(date +%s)
+}
+
+check_timeout() {
+  CURRENT_TIME=$(date +%s)
+  ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
+  if [ "$ELAPSED_TIME" -ge "$TIMEOUT" ]; then
+    echo "-----> ❌ Timeout of $TIMEOUT_MINUTES minute(s) reached. Aborting."
+    exit 1
+  fi
+}
+
 check_file_exists_remote() {
   echo "-----> ⏳ Checking if file exists at $CDN_URL/$1"
   # Use curl to send a HEAD request to check if the file exists
@@ -50,12 +68,15 @@ download_manifest_archive() {
 }
 
 check_manifest_loop() {
+  start_timer $REMOTE_BUILD_TIMEOUT_MINUTES
+
   while true; do
     if download_manifest_archive; then
       echo "✅ Manifest archive downloaded successfully."
       break
     else
-      echo "-----> ⏳ Retrying in $POLL_INTERVAL seconds..."
+      check_timeout
+      echo "-----> ⏳ Retrying in $POLL_INTERVAL seconds..."      
       sleep $POLL_INTERVAL
     fi
   done
@@ -96,6 +117,7 @@ if [[ $CURRENT_BUILDPACK_STEP == "download_manifest" ]]; then
       break
     else
       echo "-----> ⏳ File finished.txt not found. Retrying in $POLL_INTERVAL seconds..."
+      check_timeout
       sleep "$POLL_INTERVAL"
     fi
   done
