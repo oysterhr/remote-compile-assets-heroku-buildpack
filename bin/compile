@@ -17,12 +17,12 @@ HEROKU_BRANCH=$(cat "$ENV_DIR/HEROKU_BRANCH")
 RAILS_ENV=$(cat "$ENV_DIR/RAILS_ENV" | tr '[:lower:]' '[:upper:]')
 
 echo
-echo "--------------------------------------------------"
-echo "Commit SHA        : $SOURCE_VERSION"
-echo "CDN URL           : $CDN_URL"
-echo "Heroku Branch     : $HEROKU_BRANCH"
-echo "Rails Environment : $RAILS_ENV"
-echo "--------------------------------------------------"
+echo "          --------------------------------------------------"
+echo "          Commit SHA        : $SOURCE_VERSION"
+echo "          CDN URL           : $CDN_URL"
+echo "          Heroku Branch     : $HEROKU_BRANCH"
+echo "          Rails Environment : $RAILS_ENV"
+echo "          --------------------------------------------------"
 echo
 
 # Webhook variables
@@ -47,13 +47,14 @@ check_timeout() {
   CURRENT_TIME=$(date +%s)
   ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
   if [ "$ELAPSED_TIME" -ge "$TIMEOUT" ]; then
+    echo
     echo "-----> ❌ Timeout of $TIMEOUT_MINUTES minute(s) reached. Aborting."
     exit 1
   fi
 }
 
 check_file_exists_remote() {
-  echo "-----> ⏳ Checking if file exists at $CDN_URL/$1"
+  echo "          Checking if file exists at $CDN_URL/$1"
   # Use curl to send a HEAD request to check if the file exists
   if curl -f -s -I "$CDN_URL/$1" > /dev/null; then
     return 0
@@ -63,7 +64,7 @@ check_file_exists_remote() {
 }
 
 download_manifest_archive() {
-  echo "-----> ⏳ Attempting to download $CDN_URL/manifests.tar.gz"
+  echo "          Attempting to download $CDN_URL/manifests.tar.gz"
   curl -f -s -o manifests.tar.gz "$CDN_URL/manifests.tar.gz"
 }
 
@@ -72,11 +73,11 @@ check_manifest_loop() {
 
   while true; do
     if download_manifest_archive; then
-      echo "✅ Manifest archive downloaded successfully."
+      echo
+      echo "       ✅ Manifest archive downloaded successfully."
       break
     else
       check_timeout
-      echo "-----> ⏳ Retrying in $POLL_INTERVAL seconds..."      
       sleep $POLL_INTERVAL
     fi
   done
@@ -98,25 +99,19 @@ trigger_webhook() {
 if [[ $CURRENT_BUILDPACK_STEP == "download_manifest" ]]; then
   echo "-----> 🔄 Running step 2: Downloading manifest archive..."
 
-  if download_manifest_archive; then
-    echo "-----> ✅ Manifest archive downloaded successfully. Extracting..."
-  else
-    echo "-----> ⏳ Manifest archive not found. Entering busy loop until it can be downloaded..."
-    check_manifest_loop
-  fi
+  check_manifest_loop
 
   mkdir -p public
-  tar -xvf manifests.tar.gz -C "$BUILD_DIR/public"
+  echo "          Extracted files:"
+  tar -xvf manifests.tar.gz -C "$BUILD_DIR/public" | sed 's/^/          /'
   rm -f manifests.tar.gz
 
   echo "-----> ⏳ We'll now check whether the file finished.txt is found in the remote, indicating all compiled assets have been uploaded."
-
   while true; do
     if check_file_exists_remote "finished.txt"; then
       echo "-----> ✅ File finished.txt has been found. All done!"
       break
     else
-      echo "-----> ⏳ File finished.txt not found. Retrying in $POLL_INTERVAL seconds..."
       check_timeout
       sleep "$POLL_INTERVAL"
     fi
@@ -127,13 +122,13 @@ else
   # Next time this buildpack runs, it will download the manifest archive
   echo "export CURRENT_BUILDPACK_STEP=download_manifest" > "$BUILDPACK_DIR/export"
 
-  # Check if the manifest archive exists, and trigger a new build if not
-  # IF it already exists, we just proceed, as the buildpack will download it later
-  # once it runs for the second time.
-  if check_file_exists_remote "manifests.tar.gz"; then
-    echo "-----> ✅ Manifest archive found!"
+  # Check if the app has already been built, and trigger a new build otherwise
+  # If a previous compilation already exists, we just proceed, as the buildpack will
+  # download it later once it runs for the second time.
+  if check_file_exists_remote "finished.txt"; then
+    echo "-----> ✅ Previous compilation found!"
   else
-    echo "-----> ⏳ Manifest archive not found. Triggering a new build..."
+    echo "-----> ⏳ The app has not yet been compiled. Triggering a new build..."
     trigger_webhook
   fi
 
