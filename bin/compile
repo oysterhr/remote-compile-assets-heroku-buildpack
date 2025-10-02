@@ -32,7 +32,7 @@ POLL_INTERVAL=10
 HEROKU_BRANCH=master
 
 # Use CDN_ENV if available, otherwise fallback to RAILS_ENV
-CDN_ENV=$(get_env_var "CDN_ENV" "$(get_env_var "RAILS_ENV")")
+CDN_ENV=$(get_env_var "CDN_ENV" "$(get_env_var "RAILS_ENV")" | tr '[:lower:]' '[:upper:]')
 
 echo
 echo "          --------------------------------------------------"
