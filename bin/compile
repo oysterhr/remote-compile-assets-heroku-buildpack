@@ -13,7 +13,13 @@ function get_env_var() {
   if [ -f "$ENV_DIR/$var_name" ]; then
     echo "$(cat "$ENV_DIR/$var_name")"
   else
-    echo "$default_value"
+    if [ -n "$default_value" ]; then
+      echo "$default_value"
+    else
+      echo "❌ Error: Required environment variable '$var_name' is not set and no default value was provided." >&2
+      echo "   Please set the $var_name environment variable and try again." >&2
+      exit 1
+    fi
   fi
 }
 
