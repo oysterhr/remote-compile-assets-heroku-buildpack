@@ -7,50 +7,32 @@ CACHE_DIR=$2
 ENV_DIR=$3
 BUILDPACK_DIR=$(cd "$(dirname "${0:-}")"; cd ..; pwd)
 
-function get_env_var() {
-  local var_name=$1
-  local default_value=$2
-  if [ -f "$ENV_DIR/$var_name" ]; then
-    echo "$(cat "$ENV_DIR/$var_name")"
-  else
-    if [ -n "$default_value" ]; then
-      echo "$default_value"
-    else
-      echo "❌ Error: Required environment variable '$var_name' is not set and no default value was provided." >&2
-      echo "   Please set the $var_name environment variable and try again." >&2
-      exit 1
-    fi
-  fi
-}
-
 # Max number of minutes we'll wait for the remote build to finish.
-REMOTE_BUILD_TIMEOUT_MINUTES=$(get_env_var "REMOTE_BUILD_TIMEOUT_MINUTES" "10")
+REMOTE_BUILD_TIMEOUT_MINUTES=$(cat "$ENV_DIR/REMOTE_BUILD_TIMEOUT_MINUTES")
 
-CDN_HOST=$(get_env_var "CDN_HOST")
+CDN_HOST=$(cat "$ENV_DIR/CDN_HOST")
 CDN_URL="https://$CDN_HOST/$SOURCE_VERSION"
 POLL_INTERVAL=10
 HEROKU_BRANCH=master
-
-# Use CDN_ENV if available, otherwise fallback to RAILS_ENV
-CDN_ENV=$(get_env_var "CDN_ENV" "$(get_env_var "RAILS_ENV")")
+RAILS_ENV=$(cat "$ENV_DIR/RAILS_ENV" | tr '[:lower:]' '[:upper:]')
 
 echo
 echo "          --------------------------------------------------"
 echo "          Commit SHA        : $SOURCE_VERSION"
 echo "          CDN URL           : $CDN_URL"
 echo "          Heroku Branch     : $HEROKU_BRANCH"
-echo "          CDN Env           : $CDN_ENV"
+echo "          Rails Environment : $RAILS_ENV"
 echo "          --------------------------------------------------"
 echo
 
 # Webhook variables
-HARNESS_WEBHOOK_BASE_URL=$(get_env_var "HARNESS_WEBHOOK_BASE_URL")
-HARNESS_ACCOUNT_IDENTIFIER=$(get_env_var "HARNESS_ACCOUNT_IDENTIFIER")
-HARNESS_ORG_IDENTIFIER=$(get_env_var "HARNESS_ORG_IDENTIFIER")
-HARNESS_PROJECT_IDENTIFIER=$(get_env_var "HARNESS_PROJECT_IDENTIFIER")
-HARNESS_PIPELINE_IDENTIFIER=$(get_env_var "HARNESS_PIPELINE_IDENTIFIER")
-HARNESS_TRIGGER_IDENTIFIER=$(get_env_var "HARNESS_TRIGGER_IDENTIFIER")
-HARNESS_WEBHOOK_PAYLOAD="{\"commitSha\": \"$SOURCE_VERSION\", \"branch\": \"$HEROKU_BRANCH\", \"env\": \"$CDN_ENV\"}"
+HARNESS_WEBHOOK_BASE_URL=$(cat "$ENV_DIR/HARNESS_WEBHOOK_BASE_URL")
+HARNESS_ACCOUNT_IDENTIFIER=$(cat "$ENV_DIR/HARNESS_ACCOUNT_IDENTIFIER")
+HARNESS_ORG_IDENTIFIER=$(cat "$ENV_DIR/HARNESS_ORG_IDENTIFIER")
+HARNESS_PROJECT_IDENTIFIER=$(cat "$ENV_DIR/HARNESS_PROJECT_IDENTIFIER")
+HARNESS_PIPELINE_IDENTIFIER=$(cat "$ENV_DIR/HARNESS_PIPELINE_IDENTIFIER")
+HARNESS_TRIGGER_IDENTIFIER=$(cat "$ENV_DIR/HARNESS_TRIGGER_IDENTIFIER")
+HARNESS_WEBHOOK_PAYLOAD="{\"commitSha\": \"$SOURCE_VERSION\", \"branch\": \"$HEROKU_BRANCH\", \"env\": \"$RAILS_ENV\"}"
 
 # Construct URL
 WEBHOOK_URL="${HARNESS_WEBHOOK_BASE_URL}?accountIdentifier=${HARNESS_ACCOUNT_IDENTIFIER}&orgIdentifier=${HARNESS_ORG_IDENTIFIER}&projectIdentifier=${HARNESS_PROJECT_IDENTIFIER}&pipelineIdentifier=${HARNESS_PIPELINE_IDENTIFIER}&triggerIdentifier=${HARNESS_TRIGGER_IDENTIFIER}"
