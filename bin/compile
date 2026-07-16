@@ -134,6 +134,18 @@ if [[ $CURRENT_BUILDPACK_STEP == "download_manifest" ]]; then
       sleep "$POLL_INTERVAL"
     fi
   done
+
+  # Apply the CDN asset retention policy now that the new deploy's assets are fully
+  # uploaded. This tags the two most-recent deploy prefixes as protected and marks
+  # older ones as expirable so the S3 lifecycle rule cleans them up after 24 hours.
+  # The script exits non-zero only on hard configuration errors; missing optional
+  # vars (S3_BUCKET) cause a graceful skip so existing deployments are unaffected.
+  echo "-----> 🔄 Applying CDN asset retention policy..."
+  if "$BUILDPACK_DIR/bin/retain_cdn_assets" "$ENV_DIR"; then
+    echo "-----> ✅ CDN asset retention policy complete."
+  else
+    echo "-----> ⚠️  CDN asset retention policy skipped (non-fatal — see output above)."
+  fi
 else
   echo "-----> 🔄 Running step 1: Triggering webhook to compile frontend assets and manifest archive, if it is not present in remote..."
 

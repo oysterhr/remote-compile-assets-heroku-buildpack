@@ -1,0 +1,17 @@
+{
+  "Rules": [
+    {
+      "ID": "expire-old-cdn-assets",
+      "Status": "Enabled",
+      "Filter": {
+        "Tag": {
+          "Key": "expirable",
+          "Value": "true"
+        }
+      },
+      "Expiration": {
+        "Days": 1
+      }
+    }
+  ]
+}

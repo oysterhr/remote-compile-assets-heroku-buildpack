@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# bin/retain_cdn_assets
+#
+# Retention policy for Vite CDN assets stored in S3.
+#
+# After each deploy the Harness pipeline uploads a new commit-SHA-prefixed
+# directory to S3.  Previously, the pipeline immediately pruned the prior
+# SHA's directory, which caused "Unable to preload CSS" errors for users
+# whose browser had cached an older HTML page referencing the old asset paths.
+#
+# This script replaces that hard-delete prune with a tag-based soft-expiry:
+#
+#   1. The two most-recent deploy prefixes are left UN-tagged (protected).
+#   2. Every older prefix has its objects tagged  expirable=true.
+#   3. An S3 lifecycle rule (see lifecycle/s3-lifecycle-policy.json) expires
+#      objects tagged expirable=true after 24 hours.
+#
+# A sentinel-file optimisation avoids re-tagging prefixes that have already
+# been processed: if the SHA's finished.txt is already tagged correctly, the
+# entire prefix is skipped.
+#
+# IMPORTANT — Harness pipeline change required
+# -------------------------------------------
+# The `aws s3 rm --recursive` / `aws s3 sync --delete` prune step that
+# removes the previous commit SHA's directory MUST be removed from the
+# Harness pipeline.  This script becomes the sole mechanism for cleaning
+# up old assets, via the S3 lifecycle rule.
+#
+# Required Heroku config vars:
+#   S3_BUCKET          — S3 bucket that backs the CDN (e.g. oyster-assets-prod)
+#   AWS_ACCESS_KEY_ID  — AWS credentials with s3:ListBucket,
+#   AWS_SECRET_ACCESS_KEY   s3:GetObjectTagging, s3:PutObjectTagging
+#   AWS_DEFAULT_REGION — AWS region (default: us-east-1)
+#
+# Optional Heroku config vars:
+#   S3_ASSETS_PREFIX   — Path prefix inside the bucket where SHA directories
+#                        live (e.g. "production").  Defaults to the lower-case
+#                        value of CDN_ENV / RAILS_ENV.
+#   RETAIN_DEPLOY_COUNT — Number of most-recent deploys to protect (default: 2)
+#
+# Usage (called automatically by bin/compile):
+#   bin/retain_cdn_assets <env_dir>
+
+set -euo pipefail
+
+ENV_DIR="${1:-}"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+get_env_var() {
+  local var_name="$1"
+  local default_value="${2:-}"
+  if [ -n "$ENV_DIR" ] && [ -f "$ENV_DIR/$var_name" ]; then
+    cat "$ENV_DIR/$var_name"
+  elif [ -n "$default_value" ]; then
+    echo "$default_value"
+  else
+    return 1
+  fi
+}
+
+log() { echo "          $*"; }
+err() { echo "          ❌ $*" >&2; }
+
+# ---------------------------------------------------------------------------
+# Guard: skip gracefully if AWS CLI is absent or S3_BUCKET is not configured.
+# Existing deployments that haven't set S3_BUCKET are unaffected.
+# ---------------------------------------------------------------------------
+
+if ! command -v aws &>/dev/null; then
+  log "aws CLI not found — skipping CDN asset retention (install awscli to enable)."
+  exit 0
+fi
+
+if ! S3_BUCKET=$(get_env_var "S3_BUCKET"); then
+  log "S3_BUCKET is not set — skipping CDN asset retention."
+  log "Set S3_BUCKET (and AWS credentials) to enable the retention policy."
+  exit 0
+fi
+
+S3_REGION=$(get_env_var "AWS_DEFAULT_REGION" "us-east-1")
+RETAIN_COUNT=$(get_env_var "RETAIN_DEPLOY_COUNT" "2")
+
+# Derive the S3 prefix from S3_ASSETS_PREFIX, falling back to env name.
+if S3_ASSETS_PREFIX=$(get_env_var "S3_ASSETS_PREFIX"); then
+  S3_PREFIX="${S3_ASSETS_PREFIX%/}"   # strip trailing slash
+else
+  CDN_ENV_RAW=$(get_env_var "CDN_ENV" "$(get_env_var "RAILS_ENV" "production")")
+  S3_PREFIX=$(echo "$CDN_ENV_RAW" | tr '[:upper:]' '[:lower:]')
+fi
+
+# Full bucket prefix including trailing slash, or empty for bucket root.
+BUCKET_PREFIX="${S3_PREFIX:+${S3_PREFIX}/}"
+
+log "Bucket  : s3://$S3_BUCKET/${BUCKET_PREFIX}"
+log "Region  : $S3_REGION"
+log "Protect : $RETAIN_COUNT most-recent deploy(s)"
+
+# ---------------------------------------------------------------------------
+# Discover all deployed commit SHAs by listing finished.txt sentinels.
+# finished.txt is written last by the Harness pipeline, so its LastModified
+# date is a reliable proxy for deploy recency.
+# ---------------------------------------------------------------------------
+
+log "Scanning for deployed commit SHA prefixes (finished.txt sentinels)..."
+
+SENTINEL_DATA=$(aws s3api list-objects-v2 \
+  --bucket "$S3_BUCKET" \
+  --prefix "${BUCKET_PREFIX}" \
+  --query "Contents[?ends_with(Key, '/finished.txt')].[LastModified, Key]" \
+  --output text \
+  --region "$S3_REGION" 2>/dev/null || true)
+
+if [ -z "$SENTINEL_DATA" ]; then
+  log "No finished.txt sentinels found under s3://$S3_BUCKET/${BUCKET_PREFIX}."
+  log "Nothing to do — is S3_ASSETS_PREFIX set correctly?"
+  exit 0
+fi
+
+TOTAL=$(echo "$SENTINEL_DATA" | wc -l | tr -d ' ')
+log "Found $TOTAL deploy(s)."
+
+# Sort descending by LastModified (newest first). The output of list-objects-v2
+# with --query is tab-separated: <LastModified>\t<Key>
+SORTED=$(echo "$SENTINEL_DATA" | sort -r)
+
+# ---------------------------------------------------------------------------
+# Tag each prefix appropriately.
+# ---------------------------------------------------------------------------
+
+tag_all_objects_in_prefix() {
+  local prefix="$1"
+  local tag_json="$2"
+  local label="$3"
+
+  local keys
+  keys=$(aws s3api list-objects-v2 \
+    --bucket "$S3_BUCKET" \
+    --prefix "$prefix" \
+    --query "Contents[].Key" \
+    --output text \
+    --region "$S3_REGION" 2>/dev/null | tr '\t' '\n' | grep -v '^$' || true)
+
+  if [ -z "$keys" ]; then
+    log "  No objects found under $prefix — skipping."
+    return
+  fi
+
+  local count=0
+  while IFS= read -r key; do
+    [ -z "$key" ] && continue
+    aws s3api put-object-tagging \
+      --bucket "$S3_BUCKET" \
+      --key "$key" \
+      --tagging "{\"TagSet\": $tag_json}" \
+      --region "$S3_REGION" > /dev/null
+    count=$((count + 1))
+  done <<< "$keys"
+
+  log "  $label — tagged $count object(s)."
+}
+
+get_sentinel_tag() {
+  local sentinel_key="$1"
+  aws s3api get-object-tagging \
+    --bucket "$S3_BUCKET" \
+    --key "$sentinel_key" \
+    --region "$S3_REGION" \
+    --query "TagSet[?Key=='expirable'].Value | [0]" \
+    --output text 2>/dev/null || true
+}
+
+INDEX=0
+while IFS=$'\t' read -r last_modified sentinel_key; do
+  INDEX=$((INDEX + 1))
+
+  # Extract the commit SHA segment from the key.
+  # Key format: [<prefix>/]<sha>/finished.txt
+  if [ -n "$S3_PREFIX" ]; then
+    SHA=$(echo "$sentinel_key" | sed "s|^${S3_PREFIX}/||" | cut -d'/' -f1)
+  else
+    SHA=$(echo "$sentinel_key" | cut -d'/' -f1)
+  fi
+
+  SHA_PREFIX="${BUCKET_PREFIX}${SHA}/"
+
+  if [ "$INDEX" -le "$RETAIN_COUNT" ]; then
+    # -----------------------------------------------------------------------
+    # Protected deploy: ensure no expirable tag exists.
+    # -----------------------------------------------------------------------
+    CURRENT_TAG=$(get_sentinel_tag "$sentinel_key")
+    if [ "$CURRENT_TAG" = "true" ]; then
+      log "✅ Protecting deploy #$INDEX ($SHA) — removing expirable tag from all objects"
+      tag_all_objects_in_prefix "$SHA_PREFIX" '[]' "untagged (protected)"
+    else
+      log "✅ Deploy #$INDEX ($SHA) is already protected — skipping"
+    fi
+  else
+    # -----------------------------------------------------------------------
+    # Older deploy: mark as expirable so the S3 lifecycle rule expires it
+    # after 24 hours.  Skip if the sentinel is already tagged to avoid
+    # redundant API calls on every subsequent deploy.
+    # -----------------------------------------------------------------------
+    CURRENT_TAG=$(get_sentinel_tag "$sentinel_key")
+    if [ "$CURRENT_TAG" = "true" ]; then
+      log "⏭️  Deploy #$INDEX ($SHA) is already marked expirable — skipping"
+    else
+      log "⏳ Marking deploy #$INDEX ($SHA) as expirable — objects will expire after 24 h"
+      tag_all_objects_in_prefix \
+        "$SHA_PREFIX" \
+        '[{"Key": "expirable", "Value": "true"}]' \
+        "tagged expirable=true"
+    fi
+  fi
+done <<< "$SORTED"
+
+log "Retention policy applied to $INDEX deploy(s)."
