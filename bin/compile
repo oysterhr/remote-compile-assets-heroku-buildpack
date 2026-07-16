@@ -114,6 +114,40 @@ trigger_webhook() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# Ensures the AWS CLI is available in PATH.  The binary is cached in
+# CACHE_DIR/aws-cli so subsequent builds skip the ~150 MB download.
+# Installation is skipped entirely when S3_BUCKET is not configured, keeping
+# builds that haven't opted into the retention policy fast and unaffected.
+# ---------------------------------------------------------------------------
+ensure_aws_cli() {
+  if command -v aws &>/dev/null; then
+    return 0
+  fi
+
+  local aws_cache="${CACHE_DIR}/aws-cli"
+
+  if [ -f "${aws_cache}/bin/aws" ]; then
+    export PATH="${aws_cache}/bin:${PATH}"
+    echo "          ✅ AWS CLI loaded from buildpack cache."
+    return 0
+  fi
+
+  echo "-----> 📦 Installing AWS CLI (will be cached for future builds)..."
+  local pkg_dir
+  pkg_dir=$(mktemp -d)
+  curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" \
+    -o "${pkg_dir}/awscliv2.zip"
+  unzip -q "${pkg_dir}/awscliv2.zip" -d "${pkg_dir}/"
+  "${pkg_dir}/aws/install" \
+    --bin-dir "${aws_cache}/bin" \
+    --install-dir "${aws_cache}/dist" \
+    --update 2>/dev/null
+  rm -rf "${pkg_dir}"
+  export PATH="${aws_cache}/bin:${PATH}"
+  echo "          ✅ AWS CLI installed and cached."
+}
+
 if [[ $CURRENT_BUILDPACK_STEP == "download_manifest" ]]; then
   echo "-----> 🔄 Running step 2: Downloading manifest archive..."
 
@@ -141,6 +175,11 @@ if [[ $CURRENT_BUILDPACK_STEP == "download_manifest" ]]; then
   # The script exits non-zero only on hard configuration errors; missing optional
   # vars (S3_BUCKET) cause a graceful skip so existing deployments are unaffected.
   echo "-----> 🔄 Applying CDN asset retention policy..."
+  # Install the AWS CLI into CACHE_DIR if S3_BUCKET is configured and the CLI
+  # is not already present.  Heroku build dynos do not ship with awscli.
+  if [ -f "$ENV_DIR/S3_BUCKET" ]; then
+    ensure_aws_cli
+  fi
   if "$BUILDPACK_DIR/bin/retain_cdn_assets" "$ENV_DIR"; then
     echo "-----> ✅ CDN asset retention policy complete."
   else

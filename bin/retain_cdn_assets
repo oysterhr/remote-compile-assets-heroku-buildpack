@@ -151,11 +151,13 @@ tag_all_objects_in_prefix() {
   local count=0
   while IFS= read -r key; do
     [ -z "$key" ] && continue
+    # Non-fatal: a missing or inaccessible object should not abort the whole run.
     aws s3api put-object-tagging \
       --bucket "$S3_BUCKET" \
       --key "$key" \
       --tagging "{\"TagSet\": $tag_json}" \
-      --region "$S3_REGION" > /dev/null
+      --region "$S3_REGION" > /dev/null || \
+      log "  Warning: could not tag object $key (non-fatal — continuing)"
     count=$((count + 1))
   done <<< "$keys"
 
