@@ -7,6 +7,14 @@ CACHE_DIR=$2
 ENV_DIR=$3
 BUILDPACK_DIR=$(cd "$(dirname "${0:-}")"; cd ..; pwd)
 
+# File in CACHE_DIR that tracks the two most recent commit SHAs across deploys.
+# Line 1 = SHA of the deploy immediately before this one.
+# Line 2 = SHA of the deploy before that (protects against back-to-back hotfixes).
+# Both SHAs are forwarded to the Harness pipeline via `retainShas` in the webhook
+# payload so the pipeline can skip pruning those S3 prefixes.
+mkdir -p "$CACHE_DIR"
+RETAIN_SHAS_FILE="$CACHE_DIR/retain_shas"
+
 function get_env_var() {
   local var_name=$1
   local default_value=$2
@@ -16,7 +24,7 @@ function get_env_var() {
     if [ -n "$default_value" ]; then
       echo "$default_value"
     else
-      echo "❌ Error: Required environment variable '$var_name' is not set and no default value was provided." >&2
+      echo "\u274c Error: Required environment variable '$var_name' is not set and no default value was provided." >&2
       echo "   Please set the $var_name environment variable and try again." >&2
       exit 1
     fi
@@ -50,7 +58,25 @@ HARNESS_ORG_IDENTIFIER=$(get_env_var "HARNESS_ORG_IDENTIFIER")
 HARNESS_PROJECT_IDENTIFIER=$(get_env_var "HARNESS_PROJECT_IDENTIFIER")
 HARNESS_PIPELINE_IDENTIFIER=$(get_env_var "HARNESS_PIPELINE_IDENTIFIER")
 HARNESS_TRIGGER_IDENTIFIER=$(get_env_var "HARNESS_TRIGGER_IDENTIFIER")
-HARNESS_WEBHOOK_PAYLOAD="{\"commitSha\": \"$SOURCE_VERSION\", \"branch\": \"$HEROKU_BRANCH\", \"env\": \"$CDN_ENV\"}"
+
+# ---------------------------------------------------------------------------
+# Build the retainShas JSON array from the up-to-two prior commit SHAs stored
+# in CACHE_DIR. The Harness pipeline uses this list to skip deleting those S3
+# prefixes, ensuring users with cached HTML from those deploys can still load
+# their CSS/JS chunks without hitting 404s.
+# ---------------------------------------------------------------------------
+RETAIN_SHAS_JSON="[]"
+if [ -f "$RETAIN_SHAS_FILE" ]; then
+  json_parts=()
+  while IFS= read -r sha; do
+    [ -n "$sha" ] && json_parts+=("\"$sha\"")
+  done < <(head -n 2 "$RETAIN_SHAS_FILE")
+  if [ ${#json_parts[@]} -gt 0 ]; then
+    RETAIN_SHAS_JSON="[$(IFS=,; echo "${json_parts[*]}")]"
+  fi
+fi
+
+HARNESS_WEBHOOK_PAYLOAD="{\"commitSha\": \"$SOURCE_VERSION\", \"branch\": \"$HEROKU_BRANCH\", \"env\": \"$CDN_ENV\", \"retainShas\": $RETAIN_SHAS_JSON}"
 
 # Construct URL
 WEBHOOK_URL="${HARNESS_WEBHOOK_BASE_URL}?accountIdentifier=${HARNESS_ACCOUNT_IDENTIFIER}&orgIdentifier=${HARNESS_ORG_IDENTIFIER}&projectIdentifier=${HARNESS_PROJECT_IDENTIFIER}&pipelineIdentifier=${HARNESS_PIPELINE_IDENTIFIER}&triggerIdentifier=${HARNESS_TRIGGER_IDENTIFIER}"
@@ -66,7 +92,7 @@ check_timeout() {
   ELAPSED_TIME=$((CURRENT_TIME - START_TIME))
   if [ "$ELAPSED_TIME" -ge "$TIMEOUT" ]; then
     echo
-    echo "-----> ❌ Timeout of $TIMEOUT_MINUTES minute(s) reached. Aborting."
+    echo "-----> \u274c Timeout of $TIMEOUT_MINUTES minute(s) reached. Aborting."
     exit 1
   fi
 }
@@ -92,7 +118,7 @@ check_manifest_loop() {
   while true; do
     if download_manifest_archive; then
       echo
-      echo "       ✅ Manifest archive downloaded successfully."
+      echo "       \u2705 Manifest archive downloaded successfully."
       break
     else
       check_timeout
@@ -108,14 +134,128 @@ trigger_webhook() {
     -d "$HARNESS_WEBHOOK_PAYLOAD")
 
   if [ "$response" -eq 200 ]; then
-    echo "-----> ✅ Webhook triggered successfully."
+    echo "-----> \u2705 Webhook triggered successfully."
   else
-    echo "-----> ❌ Failed to trigger webhook. HTTP status code: $response"
+    echo "-----> \u274c Failed to trigger webhook. HTTP status code: $response"
   fi
 }
 
+# ---------------------------------------------------------------------------
+# apply_s3_retention_tags
+#
+# Tags the current and immediately-prior deploy's S3 object prefix with
+# `retain=permanent`, and removes that tag from any older prefixes still
+# listed in the cache.  This provides a belt-and-suspenders guarantee on top
+# of the retainShas webhook field: even if the Harness pipeline's prune step
+# runs before it reads retainShas, the tagged objects are excluded from the
+# S3 lifecycle expiration rule (Filter: TagFilters absent or Tag != retain).
+#
+# Requires:
+#   CDN_ASSETS_S3_BUCKET env var  — the S3 bucket name
+#   AWS CLI                        — must be on PATH
+#   AWS credentials                — AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+#                                    or an IAM instance role
+#
+# Gracefully no-ops if CDN_ASSETS_S3_BUCKET is unset or aws is not on PATH.
+# ---------------------------------------------------------------------------
+apply_s3_retention_tags() {
+  local bucket
+  bucket=$(get_env_var "CDN_ASSETS_S3_BUCKET" "")
+
+  if [ -z "$bucket" ]; then
+    echo "          \u26a0\ufe0f  CDN_ASSETS_S3_BUCKET not set \u2014 skipping S3 retention tagging."
+    echo "          To enable tagging, set CDN_ASSETS_S3_BUCKET and ensure AWS"
+    echo "          credentials are available in ENV_DIR."
+    return 0
+  fi
+
+  if ! command -v aws &> /dev/null; then
+    echo "          \u26a0\ufe0f  AWS CLI not found \u2014 skipping S3 retention tagging."
+    return 0
+  fi
+
+  echo "-----> \U0001f3f7\ufe0f  Applying S3 retain=permanent tags to recent deploy prefixes..."
+
+  # Collect SHAs to protect: current deploy + at most one prior deploy
+  local retain_shas=("$SOURCE_VERSION")
+  if [ -f "$RETAIN_SHAS_FILE" ]; then
+    local prior_sha
+    prior_sha=$(head -n 1 "$RETAIN_SHAS_FILE")
+    [ -n "$prior_sha" ] && retain_shas+=("$prior_sha")
+  fi
+
+  # Tag each protected prefix
+  local sha
+  for sha in "${retain_shas[@]}"; do
+    echo "          Tagging s3://$bucket/$sha/ → retain=permanent"
+    local keys
+    keys=$(aws s3api list-objects-v2 \
+      --bucket "$bucket" \
+      --prefix "$sha/" \
+      --query 'Contents[].Key' \
+      --output text 2>/dev/null || true)
+
+    if [ -z "$keys" ] || [ "$keys" = "None" ]; then
+      echo "          No objects found under s3://$bucket/$sha/ \u2014 skipping."
+      continue
+    fi
+
+    echo "$keys" | tr '\t' '\n' | while IFS= read -r key; do
+      [ -z "$key" ] && continue
+      aws s3api put-object-tagging \
+        --bucket "$bucket" \
+        --key "$key" \
+        --tagging '{"TagSet":[{"Key":"retain","Value":"permanent"}]}' \
+        2>/dev/null || true
+    done
+  done
+
+  # Strip retain tag from prefixes that have aged out of the top-2 window
+  if [ -f "$RETAIN_SHAS_FILE" ] && [ "$(wc -l < "$RETAIN_SHAS_FILE")" -ge 2 ]; then
+    local old_sha
+    while IFS= read -r old_sha; do
+      [ -z "$old_sha" ] && continue
+      echo "          Removing retain tag from s3://$bucket/$old_sha/"
+      local old_keys
+      old_keys=$(aws s3api list-objects-v2 \
+        --bucket "$bucket" \
+        --prefix "$old_sha/" \
+        --query 'Contents[].Key' \
+        --output text 2>/dev/null || true)
+
+      [ -z "$old_keys" ] || [ "$old_keys" = "None" ] && continue
+
+      echo "$old_keys" | tr '\t' '\n' | while IFS= read -r key; do
+        [ -z "$key" ] && continue
+        aws s3api delete-object-tagging \
+          --bucket "$bucket" \
+          --key "$key" \
+          2>/dev/null || true
+      done
+    done < <(tail -n +2 "$RETAIN_SHAS_FILE")
+  fi
+
+  echo "-----> \u2705 S3 retention tagging complete."
+}
+
+# ---------------------------------------------------------------------------
+# update_retain_shas_cache
+#
+# Prepends SOURCE_VERSION to RETAIN_SHAS_FILE and keeps only the last 2 lines,
+# so the next build knows which SHAs to protect from S3 pruning.
+# ---------------------------------------------------------------------------
+update_retain_shas_cache() {
+  local tmp
+  tmp=$(mktemp)
+  # Current SHA becomes line 1; previous line 1 becomes line 2
+  echo "$SOURCE_VERSION" > "$tmp"
+  [ -f "$RETAIN_SHAS_FILE" ] && head -n 1 "$RETAIN_SHAS_FILE" >> "$tmp"
+  mv "$tmp" "$RETAIN_SHAS_FILE"
+  echo "          Updated retain_shas cache: $(tr '\n' ' ' < "$RETAIN_SHAS_FILE")"
+}
+
 if [[ $CURRENT_BUILDPACK_STEP == "download_manifest" ]]; then
-  echo "-----> 🔄 Running step 2: Downloading manifest archive..."
+  echo "-----> \U0001f504 Running step 2: Downloading manifest archive..."
 
   check_manifest_loop
 
@@ -124,18 +264,26 @@ if [[ $CURRENT_BUILDPACK_STEP == "download_manifest" ]]; then
   tar -xvf manifests.tar.gz -C "$BUILD_DIR/public" | sed 's/^/          /'
   rm -f manifests.tar.gz
 
-  echo "-----> ⏳ We'll now check whether the file finished.txt is found in the remote, indicating all compiled assets have been uploaded."
+  echo "-----> \u23f3 We'll now check whether the file finished.txt is found in the remote, indicating all compiled assets have been uploaded."
   while true; do
     if check_file_exists_remote "finished.txt"; then
-      echo "-----> ✅ File finished.txt has been found. All done!"
+      echo "-----> \u2705 File finished.txt has been found. All done!"
       break
     else
       check_timeout
       sleep "$POLL_INTERVAL"
     fi
   done
+
+  # Belt-and-suspenders: tag the current and prior deploy's S3 objects with
+  # retain=permanent so they survive the lifecycle expiration even if the
+  # Harness pipeline's prune step races ahead of the retainShas check.
+  apply_s3_retention_tags
+
+  # Record the current SHA so the next deploy knows to protect it.
+  update_retain_shas_cache
 else
-  echo "-----> 🔄 Running step 1: Triggering webhook to compile frontend assets and manifest archive, if it is not present in remote..."
+  echo "-----> \U0001f504 Running step 1: Triggering webhook to compile frontend assets and manifest archive, if it is not present in remote..."
 
   # Next time this buildpack runs, it will download the manifest archive
   echo "export CURRENT_BUILDPACK_STEP=download_manifest" > "$BUILDPACK_DIR/export"
@@ -144,13 +292,13 @@ else
   # If a previous compilation already exists, we just proceed, as the buildpack will
   # download it later once it runs for the second time.
   if check_file_exists_remote "finished.txt"; then
-    echo "-----> ✅ Previous compilation found!"
+    echo "-----> \u2705 Previous compilation found!"
   else
-    echo "-----> ⏳ The app has not yet been compiled. Triggering a new build..."
+    echo "-----> \u23f3 The app has not yet been compiled. Triggering a new build..."
     trigger_webhook
   fi
 
-  echo "-----> ✅ Create a bogus manifest.yml file so the ruby buildpack does not call assets:precompile."
+  echo "-----> \u2705 Create a bogus manifest.yml file so the ruby buildpack does not call assets:precompile."
   mkdir -p "$BUILD_DIR/public/assets"
   touch "bogus" > "$BUILD_DIR/public/assets/manifest-123.json"
   
@@ -159,13 +307,13 @@ else
   # https://devcenter.heroku.com/articles/ruby-support-reference#node-js-support
   rm -f "$BUILD_DIR/package.json" "$BUILD_DIR/yarn.lock"
 
-  echo "-----> ✅ Removed package.json and yarn.lock, to prevent the ruby buildpack coming next from installing node."
+  echo "-----> \u2705 Removed package.json and yarn.lock, to prevent the ruby buildpack coming next from installing node."
 
   # Write the commit SHA to a HEROKU_BUILD_COMMIT file, to support review apps that are
   # recently-created and lack the heroku labs features that provide this information
   echo $SOURCE_VERSION > "$BUILD_DIR/HEROKU_BUILD_COMMIT"
 
-  echo "-----> ✅ Commit SHA ($SOURCE_VERSION) wrote to HEROKU_BUILD_COMMIT to support freshly created review apps without labs features."
+  echo "-----> \u2705 Commit SHA ($SOURCE_VERSION) wrote to HEROKU_BUILD_COMMIT to support freshly created review apps without labs features."
 
-  echo "-----> ✅ Step 1 finished, allowing other buildpacks to run."
+  echo "-----> \u2705 Step 1 finished, allowing other buildpacks to run."
 fi
