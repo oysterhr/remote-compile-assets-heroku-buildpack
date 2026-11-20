@@ -102,16 +102,30 @@ check_manifest_loop() {
 }
 
 trigger_webhook() {
-  response=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+  local body_file curl_status response
+  body_file=$(mktemp)
+
+  curl_status=0
+  response=$(curl -sS -o "$body_file" -w "%{http_code}" -X POST \
     -H 'Content-Type: application/json' \
     --url "$WEBHOOK_URL" \
-    -d "$HARNESS_WEBHOOK_PAYLOAD")
+    -d "$HARNESS_WEBHOOK_PAYLOAD") || curl_status=$?
 
-  if [ "$response" -eq 200 ]; then
+  if [ "$curl_status" -eq 0 ] && [[ "$response" =~ ^2[0-9][0-9]$ ]]; then
+    rm -f "$body_file"
     echo "-----> ✅ Webhook triggered successfully."
-  else
-    echo "-----> ❌ Failed to trigger webhook. HTTP status code: $response"
+    return 0
   fi
+
+  echo "-----> ❌ Failed to trigger webhook. HTTP status code: ${response:-none} (curl exit code: $curl_status)"
+  if [ -s "$body_file" ]; then
+    echo "          Response body:"
+    head -c 2000 "$body_file" | sed 's/^/          /'
+    echo
+  fi
+  rm -f "$body_file"
+  echo "-----> ❌ Remote asset compilation was not started. Failing the build now instead of waiting ${REMOTE_BUILD_TIMEOUT_MINUTES} minute(s) for a timeout."
+  exit 1
 }
 
 if [[ $CURRENT_BUILDPACK_STEP == "download_manifest" ]]; then
